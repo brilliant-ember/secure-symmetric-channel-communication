@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>Subtle-only X25519 + AES-GCM</title>
+</head>
+
+<body>
+    <script type="module">
+        // -- helpers --// 
+        const url = "http://127.0.0.1:8080"
+        // byte array to base64
+        const toBase64 = b => btoa(String.fromCharCode(...new Uint8Array(b)));
+
+        //base 64 to byte array
+        const toByteArr = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+        // HKDF -> raw AES-256 Key
+        async function hkdf(sharedSecret, info){
+            const hkdfAlg = {name :'HKDF', hash: "SHA-256", salt: new Uint8Array(32), info };
+            const raw = await crypto.subtle.deriveBits(
+                hkdfAlg,
+                await crypto.subtle.importKey('raw', sharedSecret, 'HKDF', false, ['deriveBits', 'deriveKey']),
+                256);
+              
+            return raw;
+        }
+
+        // take the raw AES key bits and convert them into the correct format for encryption and decryption
+        async function importAes(raw){
+            return crypto.subtle.importKey(
+                "raw",
+                raw,
+                {name: 'AES-GCM', length: 256},
+                false,
+                ['encrypt', 'decrypt']
+            );
+        }
+
+        // -- Step 1. generate the ephemeral key exchange pair (X25519) -- //
+        const dh = {name: 'X25519'};
+        const keypair = await crypto.subtle.generateKey(
+            dh, false, ['deriveBits']
+        );
+        // -- Step 2 export public key
+        const pubRaw = await crypto.subtle.exportKey('raw', keypair.publicKey);
+
+        // -- Step 3 fetch server's public key
+        const rsp = await fetch(url + '/kx/pub');
+        if (!rsp.ok) throw new Error('Failed to fetch server pubkey');
+        const serverPubB64 = await rsp.text();
+        const serverPub = await crypto.subtle.importKey(
+            'raw', toByteArr(serverPubB64), dh, false, []
+        );
+
+        // -- Step 4 derive 32 byte shared secret
+        const sharedSecret = await crypto.subtle.deriveBits({name: 'X25519', public: serverPub},
+            keypair.privateKey, 256
+        );
+
+        // -- Step 5 use HKDF to get AES-GCM encrypt and decrypt symmetric keys
+        // tx key is our transmit key
+        const tx = await importAes(
+            await hkdf(sharedSecret, new TextEncoder().encode('client-to-server'))
+        );      
+        // rx is our receive key
+        const rx = await importAes(
+            await hkdf(sharedSecret, new TextEncoder().encode('server-to-client'))
+        );
+        
+        // -- Step 6 encrypt a message to send to the server
+        const plaintext = new TextEncoder().encode('The client says hey!');
+        const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV aka nonce
+        const cipher = await crypto.subtle.encrypt(
+            {name :'AES-GCM', iv},
+            tx,
+            plaintext
+        );
+        
+        // -- Step 7 handshake to get session id
+        const hs = await fetch(url + '/kx/handshake', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify( {"clientPub": toBase64(pubRaw)})
+        });
+        const {sessionId} = await hs.json();
+
+        // -- Step 8 send encrypted msg we made at step 6
+        const body = new Uint8Array(12 + cipher.byteLength);
+        body.set(iv, 0);
+        body.set(new Uint8Array(cipher), 12);
+        const reply = await fetch(url + '/kx/send' ,{
+            method: 'POST',
+            headers: {'Content-Type': 'application/octet-stream',
+                    'X-Session-ID': sessionId
+                    },
+            body: body
+        });
+        if (!reply.ok) { console.error('server rejected'); }
+
+        // -- Step 9 decrypt the server's reply
+        const replyBuf = new Uint8Array(await reply.arrayBuffer())
+        const serverIvBytes = replyBuf.slice(0, 12);
+        const serverCtBytes = replyBuf.slice(12);
+        const plaintextReply = await crypto.subtle.decrypt(
+            {name: 'AES-GCM', iv: serverIvBytes},
+            rx,
+            serverCtBytes
+        );
+        console.log('server said:', new TextDecoder().decode(plaintextReply));
+    </script>
+</body>
+
+</html>
