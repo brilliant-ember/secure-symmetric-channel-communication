@@ -1,4 +1,4 @@
-# A Simple yet secure api
+# A very secure api that does absolutley nothing
 A simple frontend and backend that use X25519 key exchange to establish a bidirectional AEAD-secured symmetric channel. It uses cypto.subtle interface in the browser to protect against an attacker trying to extract the keys from the frontend's javascript. The secure channel uses to AES-GCM symmetric tx/rx keys for communication.
 
 NOTE: the steps in the code assume that the signature key has already been verfied
@@ -29,3 +29,21 @@ There are several security measures and here they are:
 | **Key compromise**                     | Ephemeral X25519 + per-session AES keys                  | Forward secrecy: past sessions stay safe even if long-term key leaks. |
 | **Message authenticity**               | Ed25519 signature + AES-GCM authentication               | Client can verify every message truly came from the server.           |
 | **Message integrity**                  | AES-GCM tag + signature coverage                         | Bit-flips or dropped data are detected immediately.                   |
+
+
+
+## In production
+- Make sure that the Ed25519 public comes from a certificate authority instead of just hard-coding it.
+- Make sure to either have a sequence-number header or to cache the nonce (IV or initilization vector) and reject the request if you see the nonce twice. This is to prevent reply attacks that store a request and send it later but before the ttl elapses.
+- both sides must sign the same data in a standardized way. This is a good scheme
+```
+SIGNING STRING =
+method + "\n" +
+path + "\n" +
+timestamp + "\n" +
+session_id + "\n" +
+sequence_number + "\n" +
+base64(ciphertext)
+
+```
+- 
