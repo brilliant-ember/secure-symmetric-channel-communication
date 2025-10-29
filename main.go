@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
@@ -35,14 +37,44 @@ type handshakeResp struct {
 var (
 	serverKxPublic, serverKxSecret [32]byte // Key exchange keys
 	sessions                       sync.Map //string[int]=>session
+	serverSignPub                  ed25519.PublicKey
+	serverSignPriv                 ed25519.PrivateKey
 )
+
+// the signing keys help me prove to the client
+// that the public keys I send are really from me
+// and not from an imposter. This is important to
+// do in the very first request when the client
+// asks for the server's exchange public key
+// because it's at that point that the attacker
+// can impersonate the server and the client will
+// not know it's talking to the real server or the attacker
+// In this demo this key will be just provided to the client
+// but in produciton it should
+// come from a certificate which comes from
+// a certificate authrority like "Let's Encrypt"
+func initSigningKeys() {
+	// uncomment to generate real keys
+	// pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	// if err != nil {
+	// 	panic(err)
+	// }
+
+	// we just save hardcode the keys for the demo, in reality you want the client to get
+	// the signature verification public key from a Certificate.
+	//  and the private key should be kept securliy outside the sourecode.
+	pub, _ := base64.StdEncoding.DecodeString("W57lhSShASDfTDYPQpGpkJnbEAf84QtrGIZWtvi2+rk=")
+	priv, _ := base64.StdEncoding.DecodeString("Pl1iDxGX+GGDMAvp3L5fctuM+as+9cVjRtQIWF4PduZbnuWFJKEBIN9MNg9CkamQmdsQB/zhC2sYhla2+Lb6uQ==")
+	serverSignPub = pub
+	serverSignPriv = priv
+}
 
 // Step 1 generate our key exchange pair
 // this is long term key exchange pair
 // that uses X25519 to generate key-exchange keys
 // that we will use in Diffie Hellman protocol
 // this keypair can be reused for multiple clients as done in TLS 1.3 and in Signal
-func keyExchangePair() {
+func initKeyExchangePair() {
 	if _, err := rand.Read(serverKxSecret[:]); err != nil {
 		log.Fatalf("generating random number failed %v", err)
 	}
@@ -51,11 +83,23 @@ func keyExchangePair() {
 
 // Step 2 advertise our exchange public key
 func handlePub(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain")
-	_, err := w.Write([]byte(base64.StdEncoding.EncodeToString(serverKxPublic[:])))
+	keyExchangePublicKey := []byte(base64.StdEncoding.EncodeToString(serverKxPublic[:]))
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	contentType := "text/plain"
+
+	// we sign both the timestamp and the exchange public key
+	signatureData := fmt.Sprintf("%s\n%s\n%s", contentType, timestamp, keyExchangePublicKey)
+	signature := ed25519.Sign(serverSignPriv, []byte(signatureData))
+	signatureBase64 := base64.StdEncoding.EncodeToString(signature)
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Timestamp", timestamp)
+	w.Header().Set("X-Signature", signatureBase64)
+
+	_, err := w.Write(keyExchangePublicKey)
 	if err != nil {
 		http.Error(w, "public key publishing failure", http.StatusInternalServerError)
-
+		return
 	}
 }
 
@@ -203,7 +247,8 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Id")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Id, X-Signature, X-Timestamp")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, X-Session-Id, X-Signature, X-Timestamp")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
@@ -214,7 +259,8 @@ func withCORS(next http.Handler) http.Handler {
 }
 
 func main() {
-	keyExchangePair()
+	initSigningKeys()
+	initKeyExchangePair()
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/kx/pub", handlePub)

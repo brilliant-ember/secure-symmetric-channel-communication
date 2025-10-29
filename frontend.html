@@ -6,6 +6,11 @@
     <title>Subtle-only X25519 + AES-GCM</title>
 </head>
 
+
+
+<p>Open the console to see the secure message exchanged</p>
+<p>Refresh the page to send more secure messages</p>
+
 <body>
     <script type="module">
         // -- helpers --// 
@@ -30,12 +35,54 @@
         // take the raw AES key bits and convert them into the correct format for encryption and decryption
         async function importAes(raw){
             return crypto.subtle.importKey(
-                "raw",
-                raw,
-                {name: 'AES-GCM', length: 256},
-                false,
-                ['encrypt', 'decrypt']
+                "raw", raw, {name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']
             );
+        }
+        function isResponseFresh(rfc3339, opts = {}) {
+            const { maxSkewSec = 60, futureSlackSec = 60 } = opts;
+            const serverMs = Date.parse(rfc3339);
+            if (Number.isNaN(serverMs)) throw new Error('Invalid RFC3339 timestamp');
+            const nowMs = Date.now();
+            // we want 60 seconds so 60*1000ms
+            const skewMs = maxSkewSec * 1000;
+            const futureMs = futureSlackSec * 1000;
+            return serverMs >= nowMs - skewMs && serverMs <= nowMs + futureMs;
+        }
+
+        async function ed25519Verify(signatureB64, data) {
+            const sigPublicKey ="W57lhSShASDfTDYPQpGpkJnbEAf84QtrGIZWtvi2+rk="; // it's base64 already
+            const pubKey = await crypto.subtle.importKey(
+                'raw', toByteArr(sigPublicKey), { name: 'Ed25519' },false,['verify']
+            );
+            return crypto.subtle.verify('Ed25519', pubKey,
+                toByteArr(signatureB64),
+                typeof data === 'string' ? new TextEncoder().encode(data) : data
+            ); 
+        }
+
+        async function verifyResponse(response){
+            const res = response.clone();
+            const respTimestamp = res.headers.get('X-Timestamp');
+            const respSig = res.headers.get('X-Signature');
+            const contentType = res.headers.get('Content-Type');
+            // console.log([...res.headers.entries()]);   // human-readable list
+            if (! isResponseFresh(respTimestamp)){
+                throw new Error('Response not fresh, timestamp outside of safe window. possible replay attac')
+            }
+            let data = ""
+            if (contentType === "text/plain"){
+                data = `${contentType}\n${respTimestamp}\n${await res.text()}`
+            } else if (contentType === "application/json"){
+                const json= await res.json();
+                const canonical = JSON.stringify(json, Object.keys(json).sort());
+                data = `${contentType}\n${respTimestamp}\n${canonical}`
+            } else {
+                throw new Error ('unknow content type')
+            }
+            if (! await ed25519Verify(respSig, data)){
+                throw new Error('verifying ed25519 signature failed');
+            };
+            console.log("Signature verified, response came from the real server.")
         }
 
         // -- Step 1. generate the ephemeral key exchange pair (X25519) -- //
@@ -49,6 +96,7 @@
         // -- Step 3 fetch server's public key
         const rsp = await fetch(url + '/kx/pub');
         if (!rsp.ok) throw new Error('Failed to fetch server pubkey');
+        await verifyResponse(rsp);
         const serverPubB64 = await rsp.text();
         const serverPub = await crypto.subtle.importKey(
             'raw', toByteArr(serverPubB64), dh, false, []
