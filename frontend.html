@@ -13,7 +13,6 @@
 
 <body>
     <script type="module">
-        // -- helpers --// 
         const url = "http://127.0.0.1:8080"
         // byte array to base64
         const toBase64 = b => btoa(String.fromCharCode(...new Uint8Array(b)));
@@ -60,7 +59,7 @@
             ); 
         }
 
-        async function verifyResponse(response){
+        async function verifyResponse(response, txCounter){
             const res = response.clone();
             const respTimestamp = res.headers.get('X-Timestamp');
             const respSig = res.headers.get('X-Signature');
@@ -83,6 +82,23 @@
                 throw new Error('verifying ed25519 signature failed');
             };
             console.log("Signature verified, response came from the real server.")
+        }
+
+        function base64ToBigInt(b64) {
+            const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+            const view = new DataView(bytes.buffer);
+            return view.getBigUint64(0, false);   // false = big-endian
+        }
+
+        function bigIntToBase64(n) {
+            if (n < 0n || n > 0xFFFFFFFFFFFFFFFFn) {
+                throw RangeError('value out of uint64 range');
+            }
+            const buf = new ArrayBuffer(8);
+            const view = new DataView(buf);
+            view.setBigUint64(0, n, false);      // false = big-endian
+            const bytes = new Uint8Array(buf);
+            return btoa(String.fromCharCode(...bytes));
         }
 
         // -- Step 1. generate the ephemeral key exchange pair (X25519) -- //
@@ -132,20 +148,30 @@
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify( {"clientPub": toBase64(pubRaw)})
         });
-        const {sessionId} = await hs.json();
+        const {sessionId, clientCounter, serverCounter} = await hs.json();
+        let rxCounter = base64ToBigInt(serverCounter);
+        let txCounter = base64ToBigInt(clientCounter);
 
         // -- Step 8 send encrypted msg we made at step 6
         const body = new Uint8Array(12 + cipher.byteLength);
         body.set(iv, 0);
         body.set(new Uint8Array(cipher), 12);
+        txCounter += BigInt(1);
         const reply = await fetch(url + '/kx/send' ,{
             method: 'POST',
             headers: {'Content-Type': 'application/octet-stream',
-                    'X-Session-ID': sessionId
+                    'X-Session-ID': sessionId,
+                    'X-Sequence': bigIntToBase64(txCounter),
                     },
             body: body
         });
         if (!reply.ok) { console.error('server rejected'); }
+        if (!reply.headers.get("X-Sequence")) { console.error('no sequence header'); }
+
+        const replySeq = reply.headers.get("X-Sequence")
+        if (base64ToBigInt(replySeq) !== rxCounter + BigInt(1) ) {
+            console.error("server reply out of sequence");
+        }
 
         // -- Step 9 decrypt the server's reply
         const replyBuf = new Uint8Array(await reply.arrayBuffer())

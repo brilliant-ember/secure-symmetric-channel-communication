@@ -12,9 +12,9 @@ The best we currently have are the X25519 for key exchange, HKDF for transformin
 
 
 ## How to run the program
-run go run main.go
-open frontend.html in your browser
-you should see messeges being printed to both the browser console and the server terminal. this are the encrypted/decrypted messages.
+- run `go run ./cmd`
+- open frontend.html with your internet browser
+- you should see messeges being printed to both the browser's console and the server terminal. this are the encrypted/decrypted messages.
 
 
 ## Why is this api secure?
@@ -34,7 +34,7 @@ There are several security measures and here they are:
 
 ## In production
 - Make sure that the Ed25519 public comes from a certificate authority instead of just hard-coding it.
-- Make sure to either have a sequence-number header or to cache the nonce (IV or initilization vector) and reject the request if you see the nonce twice. This is to prevent reply attacks that store a request and send it later but before the ttl elapses.
+- Make sure to set CORS origin properly
 - both sides must sign the same data in a standardized way. This is a good scheme
 ```
 SIGNING STRING =
@@ -43,7 +43,7 @@ path + "\n" +
 timestamp + "\n" +
 session_id + "\n" +
 sequence_number + "\n" +
-base64(ciphertext)
-
+... all other exposed headers +
+base64(body)
 ```
 - 
