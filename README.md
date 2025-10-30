@@ -1,7 +1,9 @@
 # A very secure api that does absolutley nothing
 A simple frontend and backend that use X25519 key exchange to establish a bidirectional AEAD-secured symmetric channel. It uses cypto.subtle interface in the browser to protect against an attacker trying to extract the keys from the frontend's javascript. The secure channel uses to AES-GCM symmetric tx/rx keys for communication.
 
-NOTE: the steps in the code assume that the signature key has already been verfied
+### NOTES:
+- the steps in the code assume that the signature key has already been verfied.
+- `crypto.subtle` doesn't work Firefox when you open the html file, you should open it with chrome.
 
 ## Algorithms choice
 We are limited with the choice of algorithms to only the things that the crypt.suble api supports. So we can't use better crypto algorithms, or even quantum resistant lattice algorithms for encryption/decryption, sign/verify, and key exchange.
